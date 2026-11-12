@@ -246,7 +246,7 @@ nav.tabs button[aria-current="page"] span{background:var(--sunk);box-shadow:inse
 'use strict';
 /* ================== utilidades ================== */
 var KEY = 'sopa-solidaria-v1';
-var VERSAO = '1.6';
+var VERSAO = '1.7';
 function $(s){ return document.querySelector(s); }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 function num(v){ if (typeof v === 'number') return isFinite(v) ? v : 0; var s = String(v == null ? '' : v).trim(); if (s.indexOf(',') >= 0) s = s.replace(/\./g, '').replace(',', '.'); var n = parseFloat(s); return isFinite(n) ? n : 0; }
@@ -349,6 +349,7 @@ var Sync = {
         render();
       }).catch(function(){ render(); });
     } else {
+      var sp0 = S.meta.supa; if (sp0 && sp0.grupo && sp0.grupo !== normGrupo(sp0.grupo)){ sp0.grupo = normGrupo(sp0.grupo); S.meta.puxado = null; S.pend = Object.keys(S.recs); guardar(); }
       self.modo = supaCfg() ? 'supa' : 'local';
       if (self.modo === 'supa'){ self.push(); setInterval(function(){ self.push(); }, 30000); }
     }
@@ -372,10 +373,12 @@ var Sync = {
   kick: function(){ var self = this; clearTimeout(this.t); this.t = setTimeout(function(){ self.push(); }, 700); renderTopo(); },
   push: function(){
     var self = this;
-    if (self.ocupado || self.modo === 'local') return;
+    if (self.modo === 'local') return Promise.resolve(null);
+    if (self.ocupado) return self.atual;
     self.ocupado = true;
     var p = self.modo === 'link' ? self.pushLink() : self.pushSupa();
-    p.catch(function(){}).then(function(){ self.ocupado = false; renderTopo(); });
+    self.atual = p.catch(function(){ return null; }).then(function(r){ self.ocupado = false; renderTopo(); if (V.view === 'ajustes' && !SK) render(); return r; });
+    return self.atual;
   },
   pushLink: function(){
     var self = this; var ids = S.pend.slice();
@@ -394,34 +397,58 @@ var Sync = {
     return passo(0);
   },
   pushSupa: function(){
-    var c = supaCfg(); if (!c || !navigator.onLine) return Promise.resolve();
-    var h = {'apikey':c.key, 'Authorization':'Bearer ' + c.key, 'Content-Type':'application/json'};
-    var base = c.url.replace(/\/+$/, '') + '/rest/v1/registros';
-    var ids = S.pend.slice();
-    function lote(i){
-      if (i >= ids.length) return Promise.resolve();
-      var parte = ids.slice(i, i + 40);
-      var rows = parte.map(function(id){ var r = S.recs[id]; return r ? {grupo:c.grupo, id:r.id, c:r.c || '', u:r.u || 0, d:!!r.d, dados:r} : null; }).filter(Boolean);
-      if (!rows.length) return lote(i + 40);
-      return fetch(base + '?on_conflict=grupo,id', {method:'POST', headers:Object.assign({'Prefer':'resolution=merge-duplicates,return=minimal'}, h), body:JSON.stringify(rows)}).then(function(res){
-        if (!res.ok) throw new Error('envio ' + res.status);
-        rows.forEach(function(r){ var atual = S.recs[r.id]; if (!atual || atual.u === r.u) S.pend = S.pend.filter(function(x){ return x !== r.id; }); });
-        guardar(); return lote(i + 40);
+    var c = supaCfg(); if (!c) return Promise.resolve(null);
+    if (!navigator.onLine){ Sync.ok = false; Sync.erro = 'Sem internet neste aparelho.'; return Promise.resolve(null); }
+    var h = {'apikey':c.key, 'Content-Type':'application/json'};
+    if (/^eyJ/.test(c.key)) h.Authorization = 'Bearer ' + c.key;
+    var base = c.url.replace(/\/+$/, '').replace(/\/rest\/v1.*$/, '') + '/rest/v1/registros';
+    var ids = S.pend.slice(); var enviados = 0, recebidos = 0;
+    function falha(res, etapa){
+      return res.text().then(function(t){
+        var msg = '';
+        try { msg = JSON.parse(t).message || ''; } catch (e) {}
+        var st = res.status, txt;
+        if (st === 401 || st === 403) txt = 'O servidor recusou a chave. Confira se copiou a chave anon public inteira.';
+        else if (st === 404 || /registros/.test(msg) && /exist|find/i.test(msg)) txt = 'A tabela não existe no Supabase. Rode o texto do SQL Editor.';
+        else if (st === 413) txt = 'Envio grande demais (muitas fotos de uma vez).';
+        else txt = 'Erro ' + st + ' ao ' + etapa + (msg ? ': ' + msg : '.');
+        throw new Error(txt);
       });
     }
-    return lote(0).then(function(){
+    function lote(i){
+      if (i >= ids.length) return Promise.resolve();
+      var parte = ids.slice(i, i + 25);
+      var rows = parte.map(function(id){ var r = S.recs[id]; return r ? {grupo:c.grupo, id:r.id, c:r.c || '', u:r.u || 0, d:!!r.d, dados:r} : null; }).filter(Boolean);
+      if (!rows.length) return lote(i + 25);
+      return fetch(base + '?on_conflict=grupo,id', {method:'POST', headers:Object.assign({'Prefer':'resolution=merge-duplicates,return=minimal'}, h), body:JSON.stringify(rows)}).then(function(res){
+        if (!res.ok) return falha(res, 'enviar');
+        rows.forEach(function(r){ var atual = S.recs[r.id]; if (!atual || atual.u === r.u) S.pend = S.pend.filter(function(x){ return x !== r.id; }); });
+        enviados += rows.length; guardar(); return lote(i + 25);
+      });
+    }
+    function puxar(){
       var desde = S.meta.puxado || '1970-01-01T00:00:00Z';
-      return fetch(base + '?select=dados,recebido&grupo=eq.' + encodeURIComponent(c.grupo) + '&recebido=gt.' + encodeURIComponent(desde) + '&order=recebido.asc&limit=1000', {headers:h});
-    }).then(function(res){
-      if (!res.ok) throw new Error('busca ' + res.status);
-      return res.json();
-    }).then(function(lin){
-      var mudou = false;
-      lin.forEach(function(l){ if (mesclar(l.dados)) mudou = true; S.meta.puxado = l.recebido; });
-      Sync.ok = true; Sync.erro = ''; guardar(); if (mudou) render();
-    }).catch(function(e){ Sync.ok = false; Sync.erro = String(e.message || e); });
+      return fetch(base + '?select=dados,recebido&grupo=eq.' + encodeURIComponent(c.grupo) + '&recebido=gt.' + encodeURIComponent(desde) + '&order=recebido.asc&limit=500', {headers:h}).then(function(res){
+        if (!res.ok) return falha(res, 'receber');
+        return res.json();
+      }).then(function(lin){
+        var mudou = false;
+        lin.forEach(function(l){ if (mesclar(l.dados)) mudou = true; S.meta.puxado = l.recebido; });
+        recebidos += lin.length; guardar(); if (mudou) render();
+        if (lin.length === 500) return puxar();
+      });
+    }
+    return lote(0).then(puxar).then(function(){
+      Sync.ok = true; Sync.erro = ''; S.meta.ultimoSync = Date.now(); guardar();
+      return {enviados:enviados, recebidos:recebidos};
+    }).catch(function(e){
+      Sync.ok = false;
+      Sync.erro = (e && e.name === 'TypeError') ? 'Não consegui falar com o servidor. Confira a Project URL (https://….supabase.co) e a internet.' : String(e && e.message || e);
+      return null;
+    });
   }
 };
+function normGrupo(g){ return String(g || '').trim().replace(/\s+/g, ' ').toLowerCase(); }
 function supaCfg(){ var s = S.meta.supa; return s && s.url && s.key && s.grupo ? s : null; }
 function syncInfo(){
   var n = S.pend.length;
@@ -765,8 +792,10 @@ VIEWS.ajustes = function(){
   if (noApp){
     var sp = S.meta.supa || {};
     h += '<span class="small muted">Servidor Supabase do grupo. Todos os aparelhos com o mesmo código do grupo veem os mesmos dados.</span>' +
-      '<span class="small">' + (supaCfg() ? 'Conectado ao grupo “' + esc(sp.grupo) + '”.' : 'Ainda não configurado: os dados ficam só neste aparelho.') + (Sync.erro ? ' Último erro: ' + esc(Sync.erro) : '') + '</span>' +
-      '<button class="btn ghost" data-a="sheet" data-v="supa">Configurar Supabase</button>';
+      '<span class="small">' + (supaCfg() ? 'Grupo: <b>' + esc(sp.grupo) + '</b>' : 'Ainda não configurado: os dados ficam só neste aparelho.') + '</span>' +
+      (supaCfg() && S.meta.ultimoSync ? '<span class="small muted">Última sincronização: ' + (ymd(new Date(S.meta.ultimoSync)) === hoje() ? 'hoje às ' + pad(new Date(S.meta.ultimoSync).getHours()) + ':' + pad(new Date(S.meta.ultimoSync).getMinutes()) : dFull(ymd(new Date(S.meta.ultimoSync)))) + '</span>' : '') +
+      (Sync.erro ? '<div class="warnbox">' + esc(Sync.erro) + '</div>' : '') +
+      (supaCfg() ? '<div class="g2"><button class="btn pri" data-a="syncAgora">Sincronizar agora</button><button class="btn ghost" data-a="sheet" data-v="supa">Configurar</button></div><button class="btn out sm" data-a="baixarTudo">Reenviar e baixar tudo de novo</button>' : '<button class="btn pri" data-a="sheet" data-v="supa">Configurar Supabase</button>');
   } else {
     h += '<span class="small muted">No APK, a sincronização entre os celulares dos voluntários é feita pelo Supabase do grupo.</span>';
   }
@@ -805,7 +834,7 @@ function fotoCampo(label, path, max){ var img = foto(getPath(D, path)); return '
 var UN = ['kg','g','un','pct','L','lata','cx','dz','maço'];
 
 SHEETS.grupo = function(d){ return cab('Grupo') + inp('Nome do grupo', 'grupo', {ph:'Ex.: Sopa da Praça'}) + inp('Orçamento padrão por compra (R$)', 'orc', {im:'decimal'}) + inp('Local de distribuição', 'local', {ph:'Ex.: Praça Adami'}) + '<button class="btn pri full" data-a="salvarGrupo">Salvar</button>'; };
-SHEETS.supa = function(d){ return cab('Supabase do grupo') + '<div class="infobox">No supabase.com, abra o projeto e copie Project URL e a chave anon public em Project Settings → API. Use o mesmo código do grupo em todos os celulares.</div>' + inp('Project URL', 'url', {ph:'https://xxxx.supabase.co'}) + inp('Chave anon public', 'key') + inp('Código do grupo', 'grupo', {ph:'Ex.: sopa-praca-7Q2K'}) + '<button class="btn pri full" data-a="salvarSupa">Salvar e sincronizar</button>' + (supaCfg() ? '<button class="btn danger full" data-a="desligarSupa">Desconectar</button>' : ''); };
+SHEETS.supa = function(d){ return cab('Supabase do grupo') + '<div class="infobox">No supabase.com, abra o projeto e copie a Project URL e a chave anon public (Project Settings → API Keys → Legacy API Keys). Use o mesmo código do grupo em todos os aparelhos. Maiúsculas e minúsculas não fazem diferença.</div>' + inp('Project URL', 'url', {ph:'https://xxxx.supabase.co'}) + inp('Chave anon public', 'key') + inp('Código do grupo', 'grupo', {ph:'Ex.: sopa-praca-7Q2K'}) + '<button class="btn pri full" data-a="salvarSupa">Salvar e sincronizar</button>' + (supaCfg() ? '<button class="btn danger full" data-a="desligarSupa">Desconectar</button>' : ''); };
 SHEETS.compraEd = function(d){ return cab('Dados da compra') + inp('Mercado', 'mercado', {ph:'Ex.: Atacadão'}) + inp('Data', 'data', {type:'date'}) + inp('Orçamento (R$)', 'orc', {im:'decimal'}) + '<button class="btn pri full" data-a="salvarCompraEd">Salvar</button>'; };
 SHEETS.item = function(d){
   var ref = ultimoPreco(d.nome);
@@ -945,7 +974,23 @@ var APAGAR = {
   tirarExemplos: function(){ Object.keys(S.recs).forEach(function(k){ var r = S.recs[k]; if (r.ex && !r.d) apagar(k); }); toast('Exemplos apagados'); ir('inicio'); }
 };
 A.salvarGrupo = function(){ var c = cfg(); c.grupo = D.grupo.trim(); c.orc = num(D.orc); c.local = D.local.trim(); fechar(); gravar(c); toast('Grupo salvo'); };
-A.salvarSupa = function(){ if (!/^https:\/\//.test(D.url) || !D.key || !D.grupo){ toast('Preencha a URL (https://…), a chave e o código do grupo.'); return; } S.meta.supa = {url:D.url.trim(), key:D.key.trim(), grupo:D.grupo.trim()}; S.meta.puxado = null; S.pend = Object.keys(S.recs); guardar(); fechar(); if (Sync.modo !== 'supa'){ Sync.modo = 'supa'; setInterval(function(){ Sync.push(); }, 30000); } Sync.push(); render(); toast('Sincronizando com o grupo'); };
+A.salvarSupa = function(){
+  var url = String(D.url || '').trim(), key = String(D.key || '').replace(/\s+/g, ''), g = normGrupo(D.grupo);
+  if (!/^https:\/\/.+/.test(url) || !key || !g){ toast('Preencha a URL (https://…), a chave e o código do grupo.'); return; }
+  S.meta.supa = {url:url, key:key, grupo:g}; S.meta.puxado = null; S.pend = Object.keys(S.recs); guardar(); fechar();
+  if (Sync.modo !== 'supa'){ Sync.modo = 'supa'; setInterval(function(){ Sync.push(); }, 30000); }
+  ir('ajustes'); A.syncAgora();
+};
+A.syncAgora = function(){
+  if (Sync.modo === 'local'){ toast('Configure o Supabase primeiro.'); return; }
+  toast('Sincronizando…');
+  Sync.push().then(function(r){
+    if (r) toast('Sincronizado. ' + r.enviados + ' enviado(s), ' + r.recebidos + ' recebido(s).');
+    else toast(Sync.erro || 'Não foi possível sincronizar.');
+    if (V.view === 'ajustes' && !SK) render();
+  });
+};
+A.baixarTudo = function(){ S.meta.puxado = null; S.pend = Object.keys(S.recs); guardar(); A.syncAgora(); };
 A.desligarSupa = function(){ delete S.meta.supa; guardar(); Sync.modo = 'local'; fechar(); render(); };
 A.novaCompra = function(){ var c = cfg(); var r = novo('compra', {data:hoje(), mercado:'', orc:num(c.orc), itens:[], fechada:false}); ir('compra', r.id); };
 A.abrirCompra = function(v){ fechar(); ir('compra', v); };
