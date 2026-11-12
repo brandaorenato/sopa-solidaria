@@ -257,7 +257,7 @@ nav.tabs button[aria-current="page"] span{background:var(--sunk);box-shadow:inse
 'use strict';
 /* ================== utilidades ================== */
 var KEY = 'sopa-solidaria-v1';
-var VERSAO = '1.8';
+var VERSAO = '1.9';
 function $(s){ return document.querySelector(s); }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 function num(v){ if (typeof v === 'number') return isFinite(v) ? v : 0; var s = String(v == null ? '' : v).trim(); if (s.indexOf(',') >= 0) s = s.replace(/\./g, '').replace(',', '.'); var n = parseFloat(s); return isFinite(n) ? n : 0; }
@@ -489,8 +489,12 @@ function proximaSopa(){ var h = hoje(); return sopas().filter(function(e){ retur
 function fotoEmUso(fid, menosItem){ return compras().some(function(c){ return (c.itens || []).some(function(i){ return i.id !== menosItem && i.fotoProd === fid; }); }); }
 function chaveProd(n){ return low(n).replace(/\s+/g, ' '); }
 function mercados(){
-  var m = {}; compras().forEach(function(c){ var n = String(c.mercado || '').trim(); if (!n) return; var k = low(n); if (!m[k]) m[k] = {nome:n, vezes:0, ult:''}; m[k].vezes++; if ((c.data || '') > m[k].ult) m[k].ult = c.data || ''; });
-  return Object.keys(m).map(function(k){ return m[k]; }).sort(function(a, b){ return b.ult.localeCompare(a.ult) || b.vezes - a.vezes; });
+  var m = {};
+  function pega(n){ n = String(n || '').trim(); if (!n) return null; var k = low(n); return m[k] || (m[k] = {k:k, nome:n, vezes:0, ult:'', gasto:0, rec:null}); }
+  all('mercado').forEach(function(r){ var x = pega(r.nome); if (x){ x.rec = r; x.nome = r.nome; } });
+  compras().forEach(function(c){ var x = pega(c.mercado); if (!x) return; x.vezes++; if (c.fechada) x.gasto += totalCompra(c); if ((c.data || '') > x.ult) x.ult = c.data || ''; });
+  all('preco').forEach(function(r){ var x = pega(r.mercado); if (x && (r.data || '') > x.ult) x.ult = r.data || ''; });
+  return Object.keys(m).map(function(k){ return m[k]; }).sort(function(a, b){ return b.ult.localeCompare(a.ult) || b.vezes - a.vezes || low(a.nome).localeCompare(low(b.nome)); });
 }
 function produtos(){
   var P = {};
@@ -505,6 +509,15 @@ function produtos(){
       var f = i.fotoProd || i.foto; if (f && foto(f) && (c.data || '') >= p.fotoData){ p.foto = f; p.fotoData = c.data || ''; if (i.fotoProd) p.temProd = true; }
       if ((c.data || '') >= (p.ultData || '')){ p.nome = i.nome.trim(); p.ultData = c.data || ''; }
     });
+  });
+  all('preco').forEach(function(r){
+    if (!num(r.preco) || !String(r.nome || '').trim()) return;
+    var k = chaveProd(r.nome); var p = P[k] || (P[k] = {k:k, nome:r.nome.trim(), foto:'', fotoData:'', hist:[], merc:{}});
+    var reg = {mercado:String(r.mercado || '').trim() || 'Sem mercado', data:r.data || '', preco:num(r.preco), un:r.un || 'un', u:r.u || 0, pid:r.id};
+    p.hist.push(reg); var mk = low(reg.mercado); var at = p.merc[mk];
+    if (!at || reg.data > at.data || (reg.data === at.data && reg.u > at.u)) p.merc[mk] = reg;
+    if (r.fotoProd && foto(r.fotoProd) && (r.data || '') >= p.fotoData){ p.foto = r.fotoProd; p.fotoData = r.data || ''; p.temProd = true; }
+    if ((r.data || '') >= (p.ultData || '')){ p.nome = r.nome.trim(); p.ultData = r.data || ''; }
   });
   return Object.keys(P).map(function(k){ var p = P[k]; p.lista = Object.keys(p.merc).map(function(m){ return p.merc[m]; }).sort(function(a, b){ return a.preco - b.preco; }); return p; }).sort(function(a, b){ return low(a.nome).localeCompare(low(b.nome)); });
 }
@@ -585,6 +598,7 @@ function render(){
   $('#navin').innerHTML = TABS.map(function(t){ return '<button data-a="tab" data-v="' + t[0] + '"' + (aba === t[0] ? ' aria-current="page"' : '') + '><span>' + ic(t[2], 24) + '</span>' + t[1] + '</button>'; }).join('');
   $('#dots').innerHTML = PAI[V.view] ? '' : TABK.map(function(t){ return '<i class="' + (t === V.view ? 'on' : '') + '"></i>'; }).join('');
   var fb = $('#fab'), f = FAB[V.view];
+  if (V.view === 'precos') f = (V.psub === 'merc') ? ['sheet','mercado','','Mercado'] : ['sheet','preco','','Produto'];
   if (f){ fb.hidden = false; fb.dataset.a = f[0]; fb.dataset.v = f[1]; fb.dataset.x = f[2]; fb.innerHTML = ic('plus', 24) + esc(f[3]); fb.setAttribute('aria-label', f[3]); } else fb.hidden = true;
 }
 document.addEventListener('focusout', function(){ setTimeout(function(){ if (adiado) render(); }, 0); });
@@ -806,13 +820,29 @@ VIEWS.sopa = function(){
   return h;
 };
 VIEWS.precos = function(){
-  var h = '<label class="row card" style="padding:0 14px;min-height:48px" for="buscaP"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="color:var(--muted)"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>' +
+  var sub = V.psub || 'prod';
+  var h = '<div class="seg" role="group" aria-label="Mostrar"><button data-a="psub" data-v="prod" aria-pressed="' + (sub === 'prod') + '">Produtos</button><button data-a="psub" data-v="merc" aria-pressed="' + (sub === 'merc') + '">Mercados</button></div>';
+  if (sub === 'merc') return h + listaMercados();
+  h += '<label class="row card" style="padding:0 14px;min-height:48px" for="buscaP"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="color:var(--muted)"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>' +
     '<input id="buscaP" placeholder="Buscar produto" value="' + esc(V.qp || '') + '" style="flex:1;border:0;outline:none;background:transparent;font-size:16px;min-height:46px;color:var(--ink)"></label>';
   return h + '<div id="plist" class="stack">' + listaPrecos() + '</div>';
 };
+function listaMercados(){
+  var M = mercados(); var P = produtos(); var mais = {};
+  P.forEach(function(p){ if (p.lista.length > 1 && p.lista[0].preco < p.lista[1].preco){ var k = low(p.lista[0].mercado); mais[k] = (mais[k] || 0) + 1; } });
+  if (!M.length) return '<div class="empty"><span class="thumb">' + ic('store') + '</span><span class="t16">Nenhum mercado ainda</span><span>Toque em “Mercado” para cadastrar, ou escolha o mercado quando começar uma compra.</span></div>';
+  return '<div class="stack">' + M.map(function(m){
+    var r = m.rec || {}; var img = foto(r.foto); var nprod = P.filter(function(p){ return p.merc[m.k]; }).length;
+    return '<button class="pcard" data-a="sheet" data-v="mercadoVer" data-id="' + esc(m.k) + '"><div class="row" style="gap:14px">' + (img ? '<img class="ph" src="' + img + '" alt="">' : '<span class="pl">' + ic('store', 30) + '</span>') +
+      '<span class="grow stack" style="gap:3px"><span class="t16" style="overflow-wrap:anywhere">' + esc(m.nome) + '</span>' + (r.end ? '<span class="small muted">' + esc(r.end) + '</span>' : '') +
+      '<span class="tiny muted b">' + m.vezes + ' compra(s) · ' + nprod + ' produto(s)' + (m.ult ? ' · última ' + dCurto(m.ult) : '') + '</span></span></div>' +
+      '<div class="prow"><span class="grow small muted b">Gasto nas compras finalizadas</span><span class="pv">' + brl(m.gasto) + '</span></div>' +
+      (mais[m.k] ? '<span class="chip c-ok" style="align-self:flex-start">MAIS BARATO EM ' + mais[m.k] + ' PRODUTO(S)</span>' : '') + '</button>';
+  }).join('') + '</div>';
+}
 function listaPrecos(){
   var q = chaveProd(V.qp || ''); var L = produtos().filter(function(p){ return !q || p.k.indexOf(q) >= 0; });
-  if (!L.length) return '<div class="empty"><span class="thumb">' + ic('tag') + '</span><span class="t16">' + (q ? 'Nada encontrado' : 'Nenhum preço ainda') + '</span><span>' + (q ? 'Nenhum produto com “' + esc(V.qp) + '”.' : 'Os preços aparecem aqui sozinhos quando você digita o preço dos itens nas compras. Escolha o mercado da compra para comparar.') + '</span></div>';
+  if (!L.length) return '<div class="empty"><span class="thumb">' + ic('tag') + '</span><span class="t16">' + (q ? 'Nada encontrado' : 'Nenhum preço ainda') + '</span><span>' + (q ? 'Nenhum produto com “' + esc(V.qp) + '”.' : 'Toque em “Produto” para cadastrar um preço, ou digite o preço dos itens nas compras: eles aparecem aqui sozinhos.') + '</span></div>';
   return L.map(function(p){
     var img = foto(p.foto); var varios = p.lista.length > 1;
     return '<button class="pcard" data-a="sheet" data-v="produto" data-id="' + esc(p.k) + '"><div class="row" style="gap:14px">' + (img ? '<img class="ph" src="' + img + '" alt="">' : '<span class="pl">' + esc(p.nome.charAt(0).toUpperCase()) + '</span>') +
@@ -976,7 +1006,7 @@ SHEETS.nota = function(d){
 SHEETS.anteriores = function(){ var hj = hoje(); var L = sopas().filter(function(x){ return x.data < hj; }).reverse();
   return cab('Sopas anteriores') + '<div class="list">' + L.map(function(x){ var r = x.reg || {}; return '<button class="li" data-a="abrirAnterior" data-v="' + x.id + '"><span class="thumb">' + ic('soup') + '</span><span class="tx"><span class="b">' + dLong(x.data) + (x.hora ? ' · ' + esc(x.hora) : '') + '</span><span class="small muted">' + esc(x.titulo || 'Sopa') + (r.entregues ? ' · ' + fq(r.entregues) + ' porções' : '') + '</span></span><span class="chip ' + (r.encerrado ? 'c-ok' : 'c-warn') + '">' + (r.encerrado ? 'ENCERRADA' : 'SEM REGISTRO') + '</span></button>'; }).join('') + '</div>'; };
 SHEETS.ajuda = function(){ return cab('Como usar o app') + '<div class="list">' +
-  [['home','Início','Saldo do caixa, próxima sopa, compra em andamento e atalhos.'],['soup','Sopa','Escolha a receita e as porções. O app calcula os ingredientes, desconta a despensa e cria a lista de compras. Depois da entrega, registre quantas porções saíram.'],['cart','Compras','Marque o que já pegou, fotografe a etiqueta e digite o preço. Ao finalizar, o gasto vai sozinho para o caixa.'],['tag','Preços','Compare o preço de cada produto entre os mercados, com foto e data. Toque num produto para ver o histórico.'],['cash','Caixa','Registre doações e gastos. Veja o balanço da semana ao ano e gere o PDF da prestação de contas.'],['cal','Agenda','Marque sopas, compras e reuniões. Na sopa, monte a escala e mande para o grupo.'],['note','Notas','Mural do grupo, com cores, listas e fotos.']].map(function(x){ return '<div class="li"><span class="thumb">' + ic(x[0]) + '</span><span class="tx"><span class="b">' + x[1] + '</span><span class="small muted">' + x[2] + '</span></span></div>'; }).join('') +
+  [['home','Início','Saldo do caixa, próxima sopa, compra em andamento e atalhos.'],['soup','Sopa','Escolha a receita e as porções. O app calcula os ingredientes, desconta a despensa e cria a lista de compras. Depois da entrega, registre quantas porções saíram.'],['cart','Compras','Marque o que já pegou, fotografe a etiqueta e digite o preço. Ao finalizar, o gasto vai sozinho para o caixa.'],['tag','Preços','Em Produtos, compare o preço de cada produto entre os mercados. Em Mercados, veja onde vocês compram e quanto gastaram. O botão amarelo cadastra um produto ou um mercado.'],['cash','Caixa','Registre doações e gastos. Veja o balanço da semana ao ano e gere o PDF da prestação de contas.'],['cal','Agenda','Marque sopas, compras e reuniões. Na sopa, monte a escala e mande para o grupo.'],['note','Notas','Mural do grupo, com cores, listas e fotos.']].map(function(x){ return '<div class="li"><span class="thumb">' + ic(x[0]) + '</span><span class="tx"><span class="b">' + x[1] + '</span><span class="small muted">' + x[2] + '</span></span></div>'; }).join('') +
   '</div><div class="infobox">Modo claro ou escuro: Ajustes → Aparência. Deslize o dedo para os lados para trocar de aba. O botão amarelo adiciona o que a aba guarda.</div><button class="btn pri full" data-a="cancelar">Entendi</button>'; };
 SHEETS.registro = function(d){ return cab('Registro do dia') + '<div class="g3">' + inp('Entregues', 'entregues', {im:'numeric'}) + inp('Sobraram', 'sobras', {im:'numeric'}) + inp('Pessoas', 'pessoas', {im:'numeric'}) + '</div><div class="f"><label for="f_robs">Como foi</label><textarea id="f_robs" data-b="obs" style="min-height:80px">' + esc(d.obs || '') + '</textarea></div>' + fotoCampo('Foto do dia (opcional)', 'foto', 900) + chk('Encerrar o dia', 'encerrado') + '<button class="btn pri full" data-a="salvarRegistro">Salvar registro</button>'; };
 SHEETS.gerarLista = function(d){
@@ -1015,6 +1045,9 @@ A.sheet = function(kind, el){
   if (kind === 'nota'){ var n = get(id); return abrir('nota', n ? clone(n) : {titulo:'', texto:'', lista:[], cor:0, foto:'', fix:false}); }
   if (kind === 'ajuda') return abrir('ajuda', {_semFoco:true});
   if (kind === 'produto') return abrir('produto', {k:id, _semFoco:true});
+  if (kind === 'mercadoVer') return abrir('mercadoVer', {k:id, _semFoco:true});
+  if (kind === 'mercado') return abrir('mercado', {nome:'', end:'', obs:'', foto:''});
+  if (kind === 'preco'){ var pr = get(id); var m1 = mercados()[0]; return abrir('preco', pr ? Object.assign(clone(pr), {preco:fq(pr.preco)}) : {nome:el.dataset.nome || '', mercado:m1 ? m1.nome : '', preco:'', un:'kg', data:hoje(), fotoProd:''}); }
   if (kind === 'novaCompra'){ var cf0 = cfg(); var m0 = mercados()[0]; return abrir('novaCompra', {mercado:m0 ? m0.nome : '', data:hoje(), orc:fq(cf0.orc), _semFoco:true}); }
   if (kind === 'anteriores') return abrir('anteriores', {_semFoco:true});
   if (kind === 'registro'){ var ev = get(V.id); var rg = ev.reg || {}; return abrir('registro', {entregues:rg.entregues != null ? fq(rg.entregues) : fq(ev.porcoes || ''), sobras:rg.sobras != null ? fq(rg.sobras) : '', pessoas:rg.pessoas != null ? fq(rg.pessoas) : '', obs:rg.obs || '', foto:rg.foto || '', encerrado:rg.encerrado !== false, _semFoco:true}); }
@@ -1030,6 +1063,8 @@ var APAGAR = {
   apagarVol: function(id){ apagar(id); toast('Voluntário removido'); },
   apagarReceita: function(id){ apagar(id); toast('Receita apagada'); },
   apagarDesp: function(id){ apagar(id); },
+  apagarMercado: function(id){ var r = get(id); if (r && r.foto) apagar(r.foto); apagar(id); toast('Cadastro do mercado apagado'); },
+  apagarPreco: function(id){ var r = get(id); if (r && r.fotoProd) apagar(r.fotoProd); apagar(id); toast('Preço apagado'); },
   apagarNota: function(id){ var n = get(id); if (n && n.foto) apagar(n.foto); apagar(id); toast('Nota apagada'); },
   tirarExemplos: function(){ Object.keys(S.recs).forEach(function(k){ var r = S.recs[k]; if (r.ex && !r.d) apagar(k); }); toast('Exemplos apagados'); ir('inicio'); }
 };
@@ -1111,6 +1146,30 @@ A.fecharNota = function(){
   if (n.foto && n.foto !== D.foto) apagar(n.foto); n.foto = D.foto || '';
   D._novas = []; fechar(); gravar(n);
 };
+SHEETS.mercado = function(d){ return cab(d.id ? 'Editar mercado' : 'Novo mercado', d.id ? 'data-a="confirmar" data-v="apagarMercado" data-msg="Apagar o cadastro deste mercado? As compras e os preços continuam."' : '') +
+  fotoCampo('Foto da fachada (opcional)', 'foto', 900) + inp('Nome do mercado', 'nome', {ph:'Ex.: Mix Mateus'}) + inp('Endereço ou bairro (opcional)', 'end', {ph:'Ex.: Av. Cinquentenário, Centro'}) +
+  '<div class="f"><label for="f_mobs">Observações (opcional)</label><textarea id="f_mobs" data-b="obs" style="min-height:70px" placeholder="Ex.: dia de promoção de hortifruti na quarta">' + esc(d.obs || '') + '</textarea></div>' +
+  '<button class="btn pri full" data-a="salvarMercado">Salvar mercado</button>'; };
+SHEETS.mercadoVer = function(d){
+  var m = mercados().filter(function(x){ return x.k === d.k; })[0]; if (!m) return cab('Mercado') + '<span class="muted">Mercado não encontrado.</span>';
+  var r = m.rec || {}; var img = foto(r.foto);
+  var L = produtos().filter(function(p){ return p.merc[m.k]; }).map(function(p){ var x = p.merc[m.k]; return {p:p, x:x, best:p.lista.length > 1 && p.lista[0] === x && x.preco < p.lista[1].preco, pior:p.lista.length > 1 && p.lista[0].preco < x.preco ? p.lista[0] : null}; });
+  return cab(esc(m.nome)) + (img ? '<img src="' + img + '" alt="" style="width:100%;max-height:220px;object-fit:cover;border-radius:18px">' : '') +
+    (r.end ? '<span class="small muted">' + esc(r.end) + '</span>' : '') + (r.obs ? '<div class="infobox">' + esc(r.obs) + '</div>' : '') +
+    '<div class="g3"><div class="card stack" style="padding:12px;gap:2px"><span class="tiny muted b">Compras</span><span class="b num">' + m.vezes + '</span></div><div class="card stack" style="padding:12px;gap:2px"><span class="tiny muted b">Gasto</span><span class="b num">' + brl(m.gasto) + '</span></div><div class="card stack" style="padding:12px;gap:2px"><span class="tiny muted b">Última vez</span><span class="b num">' + (m.ult ? dCurto(m.ult) : '—') + '</span></div></div>' +
+    '<div class="g2"><button class="btn yel" data-a="compraAqui" data-v="' + esc(m.nome) + '">' + ic('cart', 18) + 'Nova compra aqui</button><button class="btn out" data-a="editarMercado" data-v="' + esc(m.k) + '">' + ic('edit', 18) + 'Editar</button></div>' +
+    '<span class="sec" style="padding-left:0">Preços neste mercado</span>' +
+    (L.length ? '<div class="list">' + L.map(function(o){ return '<button class="li" data-a="sheet" data-v="produto" data-id="' + esc(o.p.k) + '"><span class="tx"><span class="b">' + esc(o.p.nome) + '</span><span class="small ' + (o.best ? '' : 'muted') + '" style="' + (o.best ? 'color:var(--good);font-weight:700' : '') + '">' + (o.best ? 'Mais barato aqui' : o.pior ? 'Mais barato no ' + esc(o.pior.mercado) + ': ' + brl(o.pior.preco) : dCurto(o.x.data)) + '</span></span><span class="b num">' + brl(o.x.preco) + '<span class="tiny muted">/' + esc(o.x.un) + '</span></span></button>'; }).join('') + '</div>' : '<div class="empty"><span>Nenhum preço anotado neste mercado ainda.</span></div>');
+};
+SHEETS.preco = function(d){
+  var nomes = produtos().map(function(p){ return p.nome; });
+  return cab(d.id ? 'Editar preço' : 'Cadastrar produto e preço', d.id ? 'data-a="confirmar" data-v="apagarPreco" data-msg="Apagar este preço?"' : '') +
+    fotoCampo('Foto do produto', 'fotoProd', 720) +
+    '<div class="f"><label for="f_nome">Produto</label><input id="f_nome" data-b="nome" list="lprod" value="' + esc(d.nome || '') + '" placeholder="Ex.: Batata"><datalist id="lprod">' + nomes.map(function(n){ return '<option value="' + esc(n) + '"></option>'; }).join('') + '</datalist></div>' +
+    '<span class="f" style="margin-bottom:-6px">Mercado</span>' + chipsMercado('mercado') + inp(mercados().length ? 'Ou escreva outro mercado' : 'Mercado', 'mercado', {ph:'Ex.: Mix Mateus'}) +
+    '<div class="g3">' + inp('Preço (R$)', 'preco', {im:'decimal'}) + sel('Por', 'un', UN) + inp('Data', 'data', {type:'date'}) + '</div>' +
+    '<button class="btn pri full" data-a="salvarPreco">Salvar preço</button>';
+};
 SHEETS.produto = function(d){
   var p = produtos().filter(function(x){ return x.k === d.k; })[0]; if (!p) return cab('Produto') + '<span class="muted">Produto não encontrado.</span>';
   var img = foto(p.foto); var H = p.hist.slice().sort(function(a, b){ return (b.data || '').localeCompare(a.data || '') || b.u - a.u; });
@@ -1118,7 +1177,8 @@ SHEETS.produto = function(d){
   var ab = compras().filter(function(c){ return !c.fechada; })[0];
   return cab(esc(p.nome)) + (img ? '<img src="' + img + '" alt="" style="width:100%;max-height:260px;object-fit:cover;border-radius:18px">' : '') +
     '<div class="g2"><div class="card stack" style="padding:12px;gap:2px"><span class="tiny muted b">Menor preço</span><span class="b num" style="color:var(--good)">' + brl(min) + '</span></div><div class="card stack" style="padding:12px;gap:2px"><span class="tiny muted b">Maior preço</span><span class="b num" style="color:var(--warn)">' + brl(max) + '</span></div></div>' +
-    '<span class="sec" style="padding-left:0">Histórico</span><div class="list">' + H.map(function(x){ return '<div class="li"><span class="tx"><span class="b">' + esc(x.mercado) + '</span><span class="small muted">' + dLong(x.data) + '</span></span><span class="b num">' + brl(x.preco) + '<span class="tiny muted">/' + esc(x.un) + '</span></span></div>'; }).join('') + '</div>' +
+    '<button class="btn ghost full" data-a="novoPrecoDe" data-v="' + esc(p.nome) + '">' + ic('plus', 18) + 'Anotar preço em outro mercado</button>' +
+    '<span class="sec" style="padding-left:0">Histórico</span><div class="list">' + H.map(function(x){ var tag = x.pid ? 'button class="li" data-a="sheet" data-v="preco" data-id="' + x.pid + '"' : 'div class="li"'; return '<' + tag + '><span class="tx"><span class="b">' + esc(x.mercado) + '</span><span class="small muted">' + dLong(x.data) + (x.pid ? ' · anotado à mão' : ' · de uma compra') + '</span></span><span class="b num">' + brl(x.preco) + '<span class="tiny muted">/' + esc(x.un) + '</span></span></' + (x.pid ? 'button' : 'div') + '>'; }).join('') + '</div>' +
     (ab ? '<button class="btn pri full" data-a="addNaCompra" data-v="' + esc(p.k) + '">' + ic('plus', 18) + 'Pôr na compra aberta (' + esc(ab.mercado || 'sem mercado') + ')</button>' : '');
 };
 A.addNaCompra = function(k){
@@ -1126,6 +1186,30 @@ A.addNaCompra = function(k){
   var ref = p.merc[low(c.mercado || '')] || p.lista[0];
   c.itens = c.itens || []; c.itens.push({id:uid(), nome:p.nome, qtd:1, un:ref.un, preco:ref.preco, ok:false, doado:false, foto:'', fotoProd:p.temProd ? p.foto : ''});
   fechar(false); gravar(c, true); ir('compra', c.id); toast(p.nome + ' foi para a compra');
+};
+A.psub = function(v){ V.psub = v; render(); };
+A.novoPrecoDe = function(v){ fechar(false); var m1 = mercados()[0]; abrir('preco', {nome:v, mercado:m1 ? m1.nome : '', preco:'', un:'kg', data:hoje(), fotoProd:''}); };
+A.compraAqui = function(v){ var c = cfg(); var r = novo('compra', {data:hoje(), mercado:v, orc:num(c.orc), itens:[], fechada:false}); fechar(false); ir('compra', r.id); };
+A.editarMercado = function(k){ var m = mercados().filter(function(x){ return x.k === k; })[0]; if (!m) return; fechar(false); var r = m.rec; abrir('mercado', r ? clone(r) : {nome:m.nome, end:'', obs:'', foto:'', _antigo:m.nome}); };
+A.salvarMercado = function(){
+  var nome = String(D.nome || '').trim(); if (!nome){ toast('Escreva o nome do mercado.'); return; }
+  var r = D.id ? get(D.id) : null; var antigo = r ? r.nome : (D._antigo || '');
+  if (!r){ var ja = all('mercado').filter(function(x){ return low(x.nome) === low(nome); })[0]; r = ja || {id:uid(), c:'mercado'}; }
+  if (r.foto && r.foto !== D.foto) apagar(r.foto);
+  r.nome = nome; r.end = String(D.end || '').trim(); r.obs = D.obs || ''; r.foto = D.foto || '';
+  if (antigo && low(antigo) !== low(nome)){
+    compras().forEach(function(c){ if (low(c.mercado) === low(antigo)){ c.mercado = nome; gravar(c, true); atualizaLancCompra(c); } });
+    all('preco').forEach(function(x){ if (low(x.mercado) === low(antigo)){ x.mercado = nome; gravar(x, true); } });
+  }
+  D._novas = []; fechar(false); gravar(r); toast('Mercado salvo');
+};
+A.salvarPreco = function(){
+  var nome = String(D.nome || '').trim(), merc = String(D.mercado || '').trim();
+  if (!nome){ toast('Escreva o nome do produto.'); return; } if (!merc){ toast('Escolha ou escreva o mercado.'); return; } if (!num(D.preco)){ toast('Digite o preço.'); return; }
+  var r = D.id ? get(D.id) : {id:uid(), c:'preco'};
+  if (r.fotoProd && r.fotoProd !== D.fotoProd) apagar(r.fotoProd);
+  r.nome = nome; r.mercado = merc; r.preco = num(D.preco); r.un = D.un || 'un'; r.data = D.data || hoje(); r.fotoProd = D.fotoProd || '';
+  D._novas = []; fechar(false); V.view = 'precos'; V.psub = 'prod'; gravar(r); toast('Preço salvo');
 };
 A.escolheMerc = function(v, el){ setPath(D, el.dataset.x, v); renderSheet(); };
 A.abrirAnterior = function(v){ fechar(false); escolherSopa(v); V.id = v; render(); window.scrollTo(0, 0); };
