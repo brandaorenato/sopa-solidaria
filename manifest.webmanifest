@@ -1,0 +1,16 @@
+{
+  "name": "Sopa Solidária",
+  "short_name": "Sopa Solidária",
+  "description": "Compras, caixa, agenda, notas e escala do grupo de sopa solidária",
+  "lang": "pt-BR",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#EEF3F3",
+  "theme_color": "#0E4A57",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
