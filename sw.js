@@ -1,5 +1,5 @@
-// Sopa Solidária 2.0: funciona sem internet
-const CACHE = 'sopa-solidaria-2.0';
+// Sopa Solidária 2.1: funciona sem internet
+const CACHE = 'sopa-solidaria-2.1';
 const BASE = ['./', 'index.html', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(BASE)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
